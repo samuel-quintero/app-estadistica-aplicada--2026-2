@@ -21,6 +21,7 @@ from src.distribuciones import (
     riesgo_falla,
     tabla_comparativa,
 )
+from src.modelos_curvas import MODELOS, ajustar_curva, tabla_modelos
 
 
 # Se fijan los periodos de retorno usados en las tablas y curvas de diseño.
@@ -565,4 +566,116 @@ riesgo_ejercicio = riesgo_falla(50, 25)
 st.write(
     f"Riesgo para T=50 años y N=25 años: **{riesgo_ejercicio:.4f}** "
     f"({riesgo_ejercicio:.2%})."
+)
+
+# G. Se comparan modelos semiempíricos con los datos de secado en capa delgada.
+st.header("Ingeniería: modelos de secado (AICc)")
+datos_secado = cargar_csv("secado.csv")
+tiempo_secado = datos_secado["tiempo_min"]
+mr_observada = datos_secado["MR"]
+
+# Se cachea la tabla para no repetir los cinco ajustes en cada interacción.
+@st.cache_data(show_spinner=False)
+def tabla_secado_cacheada(tiempo: pd.Series, humedad: pd.Series) -> pd.DataFrame:
+    """Reutiliza la comparación de modelos mientras los datos no cambien."""
+    return tabla_modelos(tiempo, humedad)
+
+
+# Se cachean también los parámetros usados para dibujar las curvas individuales.
+@st.cache_data(show_spinner=False)
+def ajuste_secado_cacheado(
+    tiempo: pd.Series,
+    humedad: pd.Series,
+    nombre: str,
+) -> np.ndarray:
+    """Reutiliza los parámetros curve_fit de una curva de secado."""
+    return ajustar_curva(tiempo, humedad, nombre)
+
+
+with st.spinner("Ajustando modelos semiempíricos de secado..."):
+    tabla_secado = tabla_secado_cacheada(tiempo_secado, mr_observada)
+
+# Se dibujan puntos observados y las curvas ajustadas de todos los modelos.
+figura, eje = plt.subplots(figsize=(10, 5))
+sns.scatterplot(
+    x=tiempo_secado,
+    y=mr_observada,
+    ax=eje,
+    color="#202f3c",
+    label="MR observada",
+    zorder=3,
+)
+tiempo_suave = np.linspace(float(tiempo_secado.min()), float(tiempo_secado.max()), 400)
+for nombre in MODELOS:
+    parametros_secado = ajuste_secado_cacheado(tiempo_secado, mr_observada, nombre)
+    funcion_modelo = MODELOS[nombre]["funcion"]
+    humedad_ajustada = funcion_modelo(tiempo_suave, *parametros_secado)
+    eje.plot(tiempo_suave, humedad_ajustada, linewidth=2, label=nombre)
+eje.set_xlabel("Tiempo de secado (min)")
+eje.set_ylabel("Razón de humedad MR (adimensional)")
+eje.set_title("Curvas semiempíricas de secado en capa delgada")
+eje.legend()
+figura.tight_layout()
+st.pyplot(figura)
+plt.close(figura)
+
+# Se calcula ΔAICc respecto del menor AICc y se ordenan los modelos.
+tabla_secado["ΔAICc"] = tabla_secado["AICc"] - tabla_secado["AICc"].min()
+tabla_secado = tabla_secado.sort_values("AICc").reset_index(drop=True)
+st.dataframe(
+    tabla_secado[
+        ["Modelo", "Parámetros", "k", "R²", "RMSE", "χ² reducido", "AIC", "AICc", "ΔAICc"]
+    ],
+    width="stretch",
+    hide_index=True,
+    column_config={
+        "R²": st.column_config.NumberColumn(format="%.4f"),
+        "RMSE": st.column_config.NumberColumn(format="%.4f"),
+        "χ² reducido": st.column_config.NumberColumn(format="%.4f"),
+        "AIC": st.column_config.NumberColumn(format="%.4f"),
+        "AICc": st.column_config.NumberColumn(format="%.4f"),
+        "ΔAICc": st.column_config.NumberColumn(format="%.4f"),
+    },
+)
+
+# Se visualizan las diferencias de AICc para comparar el soporte relativo.
+figura, eje = plt.subplots(figsize=(9, 4))
+sns.barplot(data=tabla_secado, x="Modelo", y="ΔAICc", color="#e7a34b", ax=eje)
+eje.set_xlabel("Modelo de secado")
+eje.set_ylabel("ΔAICc respecto del mínimo")
+eje.set_title("Comparación de modelos semiempíricos de secado")
+figura.tight_layout()
+st.pyplot(figura)
+plt.close(figura)
+
+# Se grafica el residuo del modelo con el menor AICc en función del tiempo.
+mejor_modelo_secado = tabla_secado.iloc[0]["Modelo"]
+mejores_parametros_secado = ajuste_secado_cacheado(
+    tiempo_secado,
+    mr_observada,
+    mejor_modelo_secado,
+)
+mejor_funcion_secado = MODELOS[mejor_modelo_secado]["funcion"]
+mr_mejor_ajustada = mejor_funcion_secado(
+    tiempo_secado.to_numpy(), *mejores_parametros_secado
+)
+residuos_secado = mr_observada.to_numpy() - mr_mejor_ajustada
+figura, eje = plt.subplots(figsize=(9, 4))
+sns.scatterplot(x=tiempo_secado, y=residuos_secado, ax=eje, color="#287c78")
+eje.axhline(0, color="#b7473e", linestyle="--")
+eje.set_xlabel("Tiempo de secado (min)")
+eje.set_ylabel("Residuo MR observado - ajustado (adimensional)")
+eje.set_title(f"Residuos del mejor modelo AICc: {mejor_modelo_secado}")
+figura.tight_layout()
+st.pyplot(figura)
+plt.close(figura)
+
+# Se explica la penalización AICc y el chi-cuadrado reducido calculado sin varianzas.
+st.info(
+    "El AICc combina ajuste y complejidad: añadir parámetros puede reducir los residuos, "
+    "pero cada parámetro recibe una penalización adicional, especialmente con muestras "
+    "pequeñas. Es una navaja de Ockham estadística: no compraríamos una secadora más "
+    "compleja si la sencilla seca igual. Aquí χ² reducido se calcula como SCE/(n-k), "
+    "porque no se proporcionaron varianzas de medición por observación; se interpreta como "
+    "diagnóstico de error residual y no como prueba formal de chi-cuadrado."
 )
