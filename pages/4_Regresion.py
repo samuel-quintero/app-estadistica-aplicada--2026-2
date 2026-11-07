@@ -16,6 +16,16 @@ from src.regresion import (
     matriz_correlacion,
     predecir,
 )
+from src.exportar import descargar_excel, descargar_figuras, descargar_reporte_markdown
+from src.validacion import (
+    advertir_datos_faltantes,
+    cargar_datos_seguros,
+    mostrar_error_ajuste,
+    validar_archivo_vacio,
+    validar_columnas_seleccionadas,
+    validar_minimo_observaciones,
+    validar_respuesta_numerica,
+)
 
 
 # Se registran unidades para las ecuaciones, tablas y ejes de las gráficas.
@@ -29,9 +39,26 @@ UNIDADES = {
 
 # Se carga la base completa y la muestra fija para los ejercicios manuales.
 tarjeta_estudiante()
-parcelas = cargar_csv("parcelas.csv")
-muestra_reg8 = cargar_csv("muestra_reg8.csv")
+parcelas = cargar_datos_seguros(cargar_csv, "parcelas.csv", "regresión")
+muestra_reg8 = cargar_datos_seguros(cargar_csv, "muestra_reg8.csv", "verificación manual")
+if parcelas is None or muestra_reg8 is None:
+    st.stop()
 respuesta = "rendimiento"
+if not validar_columnas_seleccionadas(
+    parcelas,
+    ["dosis_N", "lamina_riego", "materia_organica", "ph", "riego", respuesta],
+    "regresión de parcelas",
+):
+    st.stop()
+if not validar_columnas_seleccionadas(
+    muestra_reg8,
+    ["lamina_riego", respuesta, "parcela", "suelo", "riego"],
+    "verificación manual de regresión",
+):
+    st.stop()
+if not validar_respuesta_numerica(parcelas, respuesta, "regresión"):
+    st.stop()
+advertir_datos_faltantes(parcelas, contexto="regresión de parcelas")
 
 # A. Se calcula la matriz elegida y la correlación de cada predictor con rendimiento.
 st.title("Regresión")
@@ -84,9 +111,22 @@ variables_x = [
 ]
 indice_lamina = variables_x.index("lamina_riego") if "lamina_riego" in variables_x else 0
 variable_x = st.selectbox("Variable explicativa X", variables_x, index=indice_lamina)
+if not validar_respuesta_numerica(parcelas, variable_x, "predictor de la regresión simple"):
+    st.stop()
+if not validar_minimo_observaciones(
+    parcelas,
+    3,
+    "regresión lineal simple",
+    columnas=[variable_x, respuesta],
+):
+    st.stop()
 casos_simples = parcelas[[variable_x, respuesta, "riego"]].dropna().copy()
-modelo_simple = ajustar_rls(parcelas, variable_x, respuesta)
-manual_simple = calculo_manual(casos_simples[variable_x], casos_simples[respuesta])
+try:
+    modelo_simple = ajustar_rls(parcelas, variable_x, respuesta)
+    manual_simple = calculo_manual(casos_simples[variable_x], casos_simples[respuesta])
+except Exception as error:
+    mostrar_error_ajuste(error, "la regresión lineal simple")
+    st.stop()
 pendiente = float(modelo_simple.params.iloc[1])
 intercepto = float(modelo_simple.params.iloc[0])
 error_pendiente = float(modelo_simple.bse.iloc[1])
@@ -181,7 +221,11 @@ else:
 
 # C. Se visualizan residuos y se interpretan las pruebas de normalidad y varianza constante.
 st.header("Diagnóstico de residuos")
-diagnostico = diagnostico_residuos(modelo_simple)
+try:
+    diagnostico = diagnostico_residuos(modelo_simple)
+except Exception as error:
+    mostrar_error_ajuste(error, "el diagnóstico de residuos")
+    st.stop()
 residuos = diagnostico["residuos"].to_numpy()
 ajustados = diagnostico["ajustados"].to_numpy()
 columna_residuos, columna_histograma = st.columns(2)
@@ -296,7 +340,30 @@ st.write(
 # E. Se presenta un modelo múltiple con cuatro predictores y casos completos.
 st.header("Regresión múltiple (vista previa)")
 variables_multiples = ["dosis_N", "lamina_riego", "materia_organica", "ph"]
-modelo_multiple = ajustar_multiple(parcelas, respuesta, variables_multiples)
+if not validar_columnas_seleccionadas(parcelas, [respuesta, *variables_multiples], "regresión múltiple"):
+    st.stop()
+if not all(
+    validar_respuesta_numerica(parcelas, nombre, "regresión múltiple")
+    for nombre in [respuesta, *variables_multiples]
+):
+    st.stop()
+if not validar_minimo_observaciones(
+    parcelas,
+    len(variables_multiples) + 2,
+    "regresión múltiple",
+    columnas=[respuesta, *variables_multiples],
+):
+    st.stop()
+advertir_datos_faltantes(
+    parcelas,
+    columnas=[respuesta, *variables_multiples],
+    contexto="regresión múltiple",
+)
+try:
+    modelo_multiple = ajustar_multiple(parcelas, respuesta, variables_multiples)
+except Exception as error:
+    mostrar_error_ajuste(error, "la regresión múltiple")
+    st.stop()
 columna_r2_multi, columna_r2_adj_multi, columna_n_multi = st.columns(3)
 columna_r2_multi.metric("R² múltiple", f"{modelo_multiple.rsquared:.4f}")
 columna_r2_adj_multi.metric("R² ajustado", f"{modelo_multiple.rsquared_adj:.4f}")
@@ -332,10 +399,25 @@ st.caption("El ajuste múltiple elimina filas con faltantes en cualquiera de sus
 # F. Se verifica a mano la muestra de ocho parcelas y se compara con todas las parcelas.
 st.header("Verificación del cálculo a mano (8 parcelas)")
 variable_x_manual = "lamina_riego"
-manual_muestra = calculo_manual(
-    muestra_reg8[variable_x_manual],
-    muestra_reg8[respuesta],
-)
+if not validar_respuesta_numerica(muestra_reg8, variable_x_manual, "muestra de regresión"):
+    st.stop()
+if not validar_respuesta_numerica(muestra_reg8, respuesta, "muestra de regresión"):
+    st.stop()
+if not validar_minimo_observaciones(
+    muestra_reg8,
+    3,
+    "verificación con muestra de ocho parcelas",
+    columnas=[variable_x_manual, respuesta],
+):
+    st.stop()
+try:
+    manual_muestra = calculo_manual(
+        muestra_reg8[variable_x_manual],
+        muestra_reg8[respuesta],
+    )
+except Exception as error:
+    mostrar_error_ajuste(error, "el cálculo manual de la muestra de ocho parcelas")
+    st.stop()
 x_muestra = muestra_reg8[variable_x_manual].to_numpy(dtype=float)
 y_muestra = muestra_reg8[respuesta].to_numpy(dtype=float)
 desviacion_x = x_muestra - manual_muestra["media_x"]
@@ -416,7 +498,11 @@ st.pyplot(figura)
 plt.close(figura)
 
 # Se comparan b1, r, R², t y p entre la muestra didáctica y todas las parcelas.
-manual_todas = calculo_manual(parcelas[variable_x_manual], parcelas[respuesta])
+try:
+    manual_todas = calculo_manual(parcelas[variable_x_manual], parcelas[respuesta])
+except Exception as error:
+    mostrar_error_ajuste(error, "la comparación manual con todas las parcelas")
+    st.stop()
 comparacion_manual = pd.DataFrame(
     [
         {
@@ -449,3 +535,42 @@ st.dataframe(
         "p-valor": st.column_config.NumberColumn(format="%.4f"),
     },
 )
+
+# Se preparan tablas de resultados y diagnóstico para descargarlas en formatos comunes.
+tabla_diagnosticos = pd.DataFrame(
+    [
+        {
+            "Shapiro-Wilk W": shapiro["estadistico"],
+            "Shapiro-Wilk p": shapiro["p_valor"],
+            "Breusch-Pagan LM": breusch_pagan["LM"],
+            "Breusch-Pagan p": breusch_pagan["p_LM"],
+        }
+    ]
+)
+with st.expander("Descargar resultados"):
+    descargar_excel(
+        {
+            "Correlación matriz": correlaciones,
+            "Correlación respuesta": correlacion_rendimiento,
+            "Coeficientes simples": pd.DataFrame(filas_coeficientes),
+            "Diagnósticos residuos": tabla_diagnosticos,
+            "Coeficientes múltiples": pd.DataFrame(filas_coeficientes_multiple),
+            "Pasos muestra 8": tabla_pasos,
+            "Cálculo manual": tabla_resultados_manuales,
+            "Muestra vs total": comparacion_manual,
+        },
+        "regresion_resultados",
+        key="descargar_regresion_excel",
+    )
+    descargar_figuras(figura, "regresion_verificacion_8", key="descargar_regresion_figura")
+    descargar_reporte_markdown(
+        "Resultados de regresión",
+        f"Respuesta: {respuesta}; predictor simple: {variable_x}.\n\n"
+        f"Ecuación MCO: ŷ = {intercepto:.4f} + ({pendiente:.6f})·{variable_x}.\n\n"
+        f"r={manual_simple['r_pearson']:.4f}; R²={modelo_simple.rsquared:.4f}; "
+        f"RSE={rse_simple:.4f}; p de β1={p_pendiente:.4f}.\n\n"
+        f"Shapiro-Wilk p={shapiro['p_valor']:.4f}; "
+        f"Breusch-Pagan p={breusch_pagan['p_LM']:.4f}.",
+        "regresion_reporte.md",
+        key="descargar_regresion_reporte",
+    )

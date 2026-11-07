@@ -7,6 +7,16 @@ import streamlit as st
 
 from src.datos import cargar_csv, tarjeta_estudiante
 from src.eda import resumen_numerico, tabla_frecuencias, vallas_tukey
+from src.exportar import descargar_excel, descargar_figuras, descargar_reporte_markdown
+from src.validacion import (
+    advertir_datos_faltantes,
+    cargar_datos_seguros,
+    mostrar_error_ajuste,
+    validar_archivo_vacio,
+    validar_columnas_seleccionadas,
+    validar_minimo_observaciones,
+    validar_respuesta_numerica,
+)
 
 
 # Se definen las unidades conocidas para etiquetar correctamente los ejes.
@@ -21,8 +31,23 @@ ETIQUETAS_NUMERICAS = {
 
 # Se mantiene la ficha del estudiante y se cargan el conjunto completo y la muestra manual.
 tarjeta_estudiante()
-parcelas = cargar_csv("parcelas.csv")
-muestra_eda = cargar_csv("muestra_eda10.csv")
+parcelas = cargar_datos_seguros(cargar_csv, "parcelas.csv", "EDA")
+muestra_eda = cargar_datos_seguros(cargar_csv, "muestra_eda10.csv", "verificación manual de EDA")
+if parcelas is None or muestra_eda is None:
+    st.stop()
+if not validar_columnas_seleccionadas(
+    parcelas,
+    ["parcela", "suelo", "riego", "rendimiento"],
+    "análisis exploratorio",
+):
+    st.stop()
+if not validar_columnas_seleccionadas(
+    muestra_eda,
+    ["parcela", "suelo", "riego", "rendimiento"],
+    "verificación manual de EDA",
+):
+    st.stop()
+advertir_datos_faltantes(parcelas, contexto="EDA de parcelas")
 
 # Se ofrecen filtros categóricos comunes para los análisis del conjunto completo.
 st.sidebar.header("Filtros del EDA")
@@ -56,7 +81,15 @@ variable = st.selectbox(
     options=variables_numericas,
     index=(variables_numericas.index("rendimiento") if "rendimiento" in variables_numericas else 0),
 )
-resumen = resumen_numerico(datos[variable])
+if not validar_respuesta_numerica(datos, variable, "resumen univariado"):
+    st.stop()
+if not validar_minimo_observaciones(datos[variable], 1, "resumen univariado"):
+    st.stop()
+try:
+    resumen = resumen_numerico(datos[variable])
+except Exception as error:
+    mostrar_error_ajuste(error, "el cálculo del resumen numérico")
+    st.stop()
 st.dataframe(
     resumen.rename_axis("Estadístico").reset_index(),
     width="stretch",
@@ -95,7 +128,11 @@ with columna_caja:
     plt.close(figura)
 
 # Se identifican las observaciones exteriores a las vallas y se recuperan sus parcelas.
-limite_inferior, limite_superior, atipicos = vallas_tukey(datos[variable])
+try:
+    limite_inferior, limite_superior, atipicos = vallas_tukey(datos[variable])
+except Exception as error:
+    mostrar_error_ajuste(error, "el cálculo de las vallas de Tukey")
+    st.stop()
 st.caption(
     f"Vallas de Tukey: inferior = {limite_inferior:.4f}; "
     f"superior = {limite_superior:.4f}."
@@ -110,11 +147,13 @@ else:
 # B. Se muestran frecuencias y gráficos de barras de las variables cualitativas.
 st.header("B. Análisis cualitativo")
 columna_suelo, columna_riego = st.columns(2)
+tablas_frecuencias = {}
 for columna, nombre, contenedor in [
     ("suelo", "Suelo", columna_suelo),
     ("riego", "Riego", columna_riego),
 ]:
     frecuencias = tabla_frecuencias(datos[columna])
+    tablas_frecuencias[nombre] = frecuencias
     with contenedor:
         st.subheader(nombre)
         st.dataframe(frecuencias, width="stretch", hide_index=True)
@@ -231,6 +270,18 @@ st.info(
 
 # E. Se conserva la muestra didáctica completa para verificar los cálculos a mano.
 st.header("E. Verificación del cálculo a mano (10 parcelas)")
+if not validar_columnas_seleccionadas(
+    muestra_eda,
+    ["parcela", "suelo", "riego", "rendimiento"],
+    "verificación con 10 parcelas",
+):
+    st.stop()
+if not validar_respuesta_numerica(muestra_eda, "rendimiento", "verificación manual"):
+    st.stop()
+if not validar_minimo_observaciones(
+    muestra_eda["rendimiento"], 10, "verificación con 10 parcelas"
+):
+    st.stop()
 st.dataframe(muestra_eda, width="stretch", hide_index=True)
 
 # Se presenta el resumen de rendimiento de las diez parcelas, usando cuatro decimales.
@@ -308,3 +359,33 @@ st.dataframe(
         "Media de rendimiento (t/ha)": st.column_config.NumberColumn(format="%.4f"),
     },
 )
+
+# Se ofrecen tablas, figura y un resumen descargable sin cambiar los cálculos del EDA.
+with st.expander("Descargar resultados"):
+    descargar_excel(
+        {
+            "Resumen seleccionado": resumen.rename("Valor").rename_axis("Estadístico").reset_index(),
+            "Frecuencias suelo": tablas_frecuencias["Suelo"],
+            "Frecuencias riego": tablas_frecuencias["Riego"],
+            "Muestra 10 parcelas": muestra_eda,
+            "Desviaciones muestra": tabla_desviaciones,
+            "Media por riego": media_por_riego,
+        },
+        "eda_resultados",
+        key="descargar_eda_excel",
+    )
+    descargar_figuras(figura, "eda_matriz_correlacion", key="descargar_eda_figura")
+    reporte_eda = (
+        f"Variable analizada: {variable} ({ETIQUETAS_NUMERICAS.get(variable, variable)}).\n\n"
+        f"Observaciones incluidas: {len(datos)}.\n\n"
+        f"Media: {resumen['Media']:.4f}; mediana: {resumen['Mediana']:.4f}; "
+        f"desviación estándar: {resumen['Desviación estándar muestral']:.4f}.\n\n"
+        f"Vallas de Tukey: [{limite_inferior:.4f}, {limite_superior:.4f}].\n\n"
+        f"Atípicos detectados: {len(atipicos)}."
+    )
+    descargar_reporte_markdown(
+        "Resumen EDA",
+        reporte_eda,
+        "eda_reporte.md",
+        key="descargar_eda_reporte",
+    )

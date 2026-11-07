@@ -19,6 +19,17 @@ from src.series import (
     metricas,
     promedio_movil,
 )
+from src.exportar import descargar_excel, descargar_figuras, descargar_reporte_markdown
+from src.validacion import (
+    advertir_datos_faltantes,
+    cargar_datos_seguros,
+    mostrar_error_ajuste,
+    validar_archivo_vacio,
+    validar_columnas_seleccionadas,
+    validar_minimo_observaciones,
+    validar_respuesta_numerica,
+    validar_serie_mensual,
+)
 
 
 # Se definen nombres de meses en español para tablas y diagramas de caja.
@@ -77,9 +88,50 @@ variable = st.selectbox(
     options=["precipitacion_mm", "temperatura_c"],
     format_func=lambda valor: NOMBRES_VARIABLES[valor],
 )
-serie = cargar_serie(variable)
+serie = cargar_datos_seguros(cargar_serie, variable, "serie climática")
+if serie is None:
+    st.stop()
 etiqueta_y = NOMBRES_VARIABLES[variable]
-muestra24 = cargar_csv("muestra_series24.csv").sort_values("fecha").reset_index(drop=True)
+muestra24 = cargar_datos_seguros(
+    cargar_csv,
+    "muestra_series24.csv",
+    "verificación manual de series",
+)
+if muestra24 is None:
+    st.stop()
+if not validar_archivo_vacio(serie.to_frame(), NOMBRES_VARIABLES[variable]):
+    st.stop()
+if not validar_respuesta_numerica(serie.to_frame(), variable, "serie de tiempo"):
+    st.stop()
+if not validar_serie_mensual(serie, minimo=24, contexto=NOMBRES_VARIABLES[variable]):
+    st.stop()
+if not advertir_datos_faltantes(serie.to_frame(), contexto="serie climática mensual"):
+    st.info("La serie contiene meses sin observación; se detiene el análisis para evitar imputaciones automáticas.")
+    st.stop()
+if not validar_archivo_vacio(muestra24, "muestra_series24.csv"):
+    st.stop()
+if not validar_columnas_seleccionadas(
+    muestra24,
+    ["fecha", "precipitacion_mm", "conjunto", "periodo", "anio", "mes"],
+    "verificación temporal",
+):
+    st.stop()
+if not validar_respuesta_numerica(muestra24, "precipitacion_mm", "validación temporal"):
+    st.stop()
+if not validar_minimo_observaciones(muestra24["precipitacion_mm"], 24, "muestra de series"):
+    st.stop()
+if not advertir_datos_faltantes(muestra24, contexto="muestra temporal de 24 meses"):
+    st.info("Completa o documenta los faltantes de la muestra antes de comparar pronósticos.")
+    st.stop()
+if (
+    (muestra24["conjunto"] == "entrenamiento").sum() != 18
+    or (muestra24["conjunto"] == "validacion").sum() != 6
+):
+    st.error(
+        "La muestra debe tener 18 meses de entrenamiento y 6 de validación. "
+        "Revisa la columna conjunto antes de calcular el concurso manual."
+    )
+    st.stop()
 
 # 1. Se explora la serie con promedios móviles y distribuciones por mes calendario.
 st.header("Exploración")
@@ -137,7 +189,11 @@ La temperatura también puede presentar un ciclo anual, pero no debe interpretar
 
 # 2. Se descompone aditivamente la serie y se interpretan los doce índices mensuales.
 st.header("Descomposición clásica")
-descomposicion = descomponer(serie)
+try:
+    descomposicion = descomponer(serie)
+except Exception as error:
+    mostrar_error_ajuste(error, "la descomposición clásica de la serie")
+    st.stop()
 componentes = [
     ("Observada", descomposicion.observed),
     ("Tendencia", descomposicion.trend),
@@ -181,7 +237,11 @@ st.caption(f"Suma de los doce índices aditivos: {indices.sum():.10f} (≈ 0).")
 st.header("Métodos de referencia y validación")
 entrenamiento = serie.iloc[:-12]
 validacion = serie.iloc[-12:]
-pronosticos_validacion = metodos_referencia(entrenamiento, h=len(validacion))
+try:
+    pronosticos_validacion = metodos_referencia(entrenamiento, h=len(validacion))
+except Exception as error:
+    mostrar_error_ajuste(error, "los métodos de referencia de la serie")
+    st.stop()
 pronosticos_validacion.index = validacion.index
 
 # Se grafican observaciones y métodos de referencia exclusivamente en el periodo de validación.
@@ -268,7 +328,12 @@ if ejecutar_formulario:
             "semilla": semilla_autots,
         }
     except Exception as error:
-        st.error(f"AutoTS no pudo completar la búsqueda: {error}")
+        mostrar_error_ajuste(
+            error,
+            "la búsqueda automática de AutoTS",
+            "Confirma que haya al menos 24 meses continuos, revisa las opciones de búsqueda "
+            "y vuelve a intentarlo. Algunos candidatos pueden fallar y ser descartados por AutoTS.",
+        )
 
 # Se muestran resultados de sesión si ya se ejecutó el formulario.
 if "resultado_autots" in st.session_state:
@@ -384,7 +449,11 @@ entrenamiento_muestra = muestra_temporal.loc[
 validacion_muestra = muestra_temporal.loc[
     muestra_temporal["conjunto"] == "validacion"
 ].set_index("fecha")["precipitacion_mm"]
-pronosticos_muestra = metodos_referencia(entrenamiento_muestra, h=len(validacion_muestra))
+try:
+    pronosticos_muestra = metodos_referencia(entrenamiento_muestra, h=len(validacion_muestra))
+except Exception as error:
+    mostrar_error_ajuste(error, "los pronósticos de verificación para la muestra 18/6")
+    st.stop()
 tabla_validacion = pd.DataFrame(
     {
         "fecha": validacion_muestra.index,
@@ -468,3 +537,41 @@ eje.legend()
 figura.tight_layout()
 st.pyplot(figura)
 plt.close(figura)
+
+# Se reúnen las salidas principales para exportarlas sin repetir análisis ni búsquedas.
+tablas_exportacion = {
+    "PM3 y muestra": muestra_temporal,
+    "Índices completos": tabla_indices,
+    "Métricas referencia": tabla_metricas,
+    "Índices muestra 24": tabla_indices_muestra,
+    "Pronóstico muestra": tabla_validacion,
+    "Errores por mes": tabla_errores,
+    "Métricas muestra": metricas_muestra,
+}
+if "resultado_autots" in st.session_state:
+    tablas_exportacion["Pronóstico AutoTS"] = st.session_state["resultado_autots"]["pronostico"]
+    tablas_exportacion["Top 10 AutoTS"] = st.session_state["resultado_autots"]["top10"]
+
+# Se ofrecen Excel, la figura de validación y un resumen descargable.
+with st.expander("Descargar resultados"):
+    descargar_excel(
+        tablas_exportacion,
+        "series_resultados",
+        key="descargar_series_excel",
+    )
+    descargar_figuras(figura, "series_validacion_referencias", key="descargar_series_figura")
+    mejor_referencia = metricas_muestra.iloc[0]
+    reporte_series = (
+        f"Variable explorada: {NOMBRES_VARIABLES[variable]}.\n\n"
+        f"Observaciones mensuales: {len(serie)}; suma de índices estacionales: "
+        f"{indices.sum():.8f}.\n\n"
+        f"Mejor método de referencia en la muestra: {mejor_referencia['Método']} "
+        f"(MAE={mejor_referencia['MAE']:.4f}, RMSE={mejor_referencia['RMSE']:.4f}, "
+        f"SMAPE={mejor_referencia['SMAPE']:.4f})."
+    )
+    descargar_reporte_markdown(
+        "Resultados de series de tiempo",
+        reporte_series,
+        "series_reporte.md",
+        key="descargar_series_reporte",
+    )

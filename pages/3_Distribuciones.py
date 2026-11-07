@@ -22,6 +22,16 @@ from src.distribuciones import (
     tabla_comparativa,
 )
 from src.modelos_curvas import MODELOS, ajustar_curva, tabla_modelos
+from src.exportar import descargar_excel, descargar_figuras, descargar_reporte_markdown
+from src.validacion import (
+    advertir_datos_faltantes,
+    cargar_datos_seguros,
+    mostrar_error_ajuste,
+    validar_archivo_vacio,
+    validar_columnas_seleccionadas,
+    validar_minimo_observaciones,
+    validar_respuesta_numerica,
+)
 
 
 # Se fijan los periodos de retorno usados en las tablas y curvas de diseño.
@@ -40,6 +50,16 @@ def ajuste_cacheado(serie: pd.Series, nombre: str) -> tuple[tuple, int]:
     """Reutiliza el ajuste MLE de una distribución para gráficos y cuantiles."""
     # Los parámetros ajustados son iguales mientras se mantengan la serie y el modelo.
     return ajustar(serie, nombre)
+
+
+def ajuste_seguro(serie: pd.Series, nombre: str) -> tuple[tuple, int]:
+    """Presenta errores de ajuste con una explicación para el modelo seleccionado."""
+    # Se captura la excepción del ajuste para evitar que llegue como una traza sin contexto.
+    try:
+        return ajuste_cacheado(serie, nombre)
+    except Exception as error:
+        mostrar_error_ajuste(error, f"el ajuste de la distribución {nombre}")
+        st.stop()
 
 
 @st.cache_data(show_spinner=False)
@@ -93,10 +113,32 @@ def interpretar_delta_aic(delta: float) -> str:
 
 # Se muestra la tarjeta personal y se cargan la serie anual y la muestra de cálculo manual.
 tarjeta_estudiante()
-datos = cargar_csv("precip_max_anual.csv")
-muestra = cargar_csv("muestra_dist10.csv")
+datos = cargar_datos_seguros(cargar_csv, "precip_max_anual.csv", "ajuste de distribuciones")
+muestra = cargar_datos_seguros(cargar_csv, "muestra_dist10.csv", "verificación manual")
+datos_secado = cargar_datos_seguros(cargar_csv, "secado.csv", "modelos de secado")
+if datos is None or muestra is None or datos_secado is None:
+    st.stop()
+if not validar_columnas_seleccionadas(datos, ["anio", "pmax24h_mm"], "ajuste de precipitación"):
+    st.stop()
+if not validar_columnas_seleccionadas(muestra, ["anio", "pmax24h_mm"], "muestra manual"):
+    st.stop()
+if not validar_columnas_seleccionadas(datos_secado, ["tiempo_min", "MR"], "ajuste de secado"):
+    st.stop()
+if not validar_respuesta_numerica(datos, "pmax24h_mm", "ajuste de distribuciones"):
+    st.stop()
+if not validar_respuesta_numerica(muestra, "pmax24h_mm", "verificación de distribuciones"):
+    st.stop()
+if not validar_respuesta_numerica(datos_secado, "MR", "modelos de secado"):
+    st.stop()
+advertir_datos_faltantes(datos, contexto="máximos anuales")
+advertir_datos_faltantes(muestra, contexto="muestra de máximos anuales")
+advertir_datos_faltantes(datos_secado, contexto="datos de secado")
 datos = datos.sort_values("anio").reset_index(drop=True)
 serie = datos["pmax24h_mm"].dropna()
+if not validar_minimo_observaciones(serie, 10, "ajuste de distribuciones"):
+    st.stop()
+if not validar_minimo_observaciones(muestra["pmax24h_mm"], 10, "muestra de distribuciones"):
+    st.stop()
 
 # A. Se presenta la serie de máximos anuales, un resumen y su distribución empírica.
 st.title("Distribuciones de precipitación máxima anual")
@@ -173,7 +215,7 @@ eje.plot([], [], color="#a6b0ae", linewidth=8, alpha=0.45, label="Máximos obser
 rejilla = np.linspace(max(0, float(serie.min()) * 0.8), float(serie.max()) * 1.15, 300)
 filas_parametros = []
 for nombre in modelos_seleccionados:
-    parametros, k = ajuste_cacheado(serie, nombre)
+    parametros, k = ajuste_seguro(serie, nombre)
     densidad = CANDIDATAS[nombre].pdf(rejilla, *parametros)
     eje.plot(rejilla, densidad, linewidth=2, label=nombre)
 
@@ -219,7 +261,11 @@ n_mc = st.slider(
     step=100,
 )
 with st.spinner(f"Calculando pruebas con {n_mc} réplicas; el primer cálculo puede tardar..."):
-    comparacion_completa = tabla_comparativa_cacheada(serie, n_mc)
+    try:
+        comparacion_completa = tabla_comparativa_cacheada(serie, n_mc)
+    except Exception as error:
+        mostrar_error_ajuste(error, "las pruebas Monte Carlo de bondad de ajuste")
+        st.stop()
 tabla_pruebas = comparacion_completa.loc[
     comparacion_completa["Modelo"].isin(modelos_seleccionados),
     [
@@ -263,7 +309,7 @@ figura, ejes = plt.subplots(
 )
 correlaciones_qq = {}
 for eje, nombre in zip(ejes.flat, modelos_seleccionados):
-    parametros, _ = ajuste_cacheado(serie, nombre)
+    parametros, _ = ajuste_seguro(serie, nombre)
     cuantiles_teoricos, cuantiles_observados, correlacion = cuantiles_qq(
         serie, nombre, parametros
     )
@@ -390,7 +436,7 @@ filas_cuantiles = []
 for periodo in PERIODOS_RETORNO:
     fila = {"T (años)": periodo}
     for nombre in modelos_seleccionados:
-        parametros, _ = ajuste_cacheado(serie, nombre)
+        parametros, _ = ajuste_seguro(serie, nombre)
         fila[nombre] = cuantil_retorno(nombre, parametros, periodo)
     filas_cuantiles.append(fila)
 tabla_cuantiles = pd.DataFrame(filas_cuantiles)
@@ -419,7 +465,7 @@ eje.scatter(
     zorder=3,
 )
 for nombre in modelos_seleccionados:
-    parametros, _ = ajuste_cacheado(serie, nombre)
+    parametros, _ = ajuste_seguro(serie, nombre)
     cuantiles_modelo = CANDIDATAS[nombre].ppf(probabilidades_gumbel, *parametros)
     eje.plot(variable_reducida_curva, cuantiles_modelo, linewidth=2, label=nombre)
 
@@ -456,8 +502,11 @@ with columna_periodo_ic:
 clave_ic = (modelo_ic, periodo_ic, 500, 42)
 if st.button("Calcular intervalo bootstrap del 95 %", key="calcular_bootstrap"):
     with st.spinner("Calculando bootstrap paramétrico (500 réplicas)..."):
-        intervalo = bootstrap_cacheado(serie, modelo_ic, float(periodo_ic), semilla=42)
-    st.session_state["intervalo_bootstrap"] = (clave_ic, intervalo)
+            try:
+                intervalo = bootstrap_cacheado(serie, modelo_ic, float(periodo_ic), semilla=42)
+                st.session_state["intervalo_bootstrap"] = (clave_ic, intervalo)
+            except Exception as error:
+                mostrar_error_ajuste(error, f"el intervalo bootstrap de {modelo_ic}")
 
 # Se conserva visible el intervalo ya calculado mientras no cambie modelo ni periodo.
 resultado_ic = st.session_state.get("intervalo_bootstrap")
@@ -488,6 +537,16 @@ st.caption(
 
 # F. Se verifica a mano la muestra de diez años con posiciones, Gumbel y riesgo.
 st.header("Verificación del cálculo a mano (10 años)")
+if not validar_columnas_seleccionadas(
+    muestra,
+    ["anio", "pmax24h_mm"],
+    "verificación con 10 máximos",
+):
+    st.stop()
+if not validar_minimo_observaciones(
+    muestra["pmax24h_mm"], 10, "verificación con 10 máximos"
+):
+    st.stop()
 posiciones_muestra = posiciones_graficas(muestra["pmax24h_mm"])
 muestra_ordenada = muestra.sort_values("pmax24h_mm").reset_index(drop=True)
 tabla_posiciones = pd.DataFrame(
@@ -519,7 +578,11 @@ columna_desviacion.metric("Desviación estándar muestral (mm)", f"{desviacion_m
 
 # Se comparan los parámetros Gumbel por momentos con los de máxima verosimilitud.
 parametros_momentos = gumbel_momentos(muestra["pmax24h_mm"])
-parametros_mle, _ = ajustar(muestra["pmax24h_mm"], "Gumbel")
+try:
+    parametros_mle, _ = ajustar(muestra["pmax24h_mm"], "Gumbel")
+except Exception as error:
+    mostrar_error_ajuste(error, "el ajuste Gumbel por máxima verosimilitud de la muestra")
+    st.stop()
 mu_mle, beta_mle = float(parametros_mle[-2]), float(parametros_mle[-1])
 st.dataframe(
     pd.DataFrame(
@@ -570,7 +633,8 @@ st.write(
 
 # G. Se comparan modelos semiempíricos con los datos de secado en capa delgada.
 st.header("Ingeniería: modelos de secado (AICc)")
-datos_secado = cargar_csv("secado.csv")
+if not validar_minimo_observaciones(datos_secado["MR"], 10, "ajuste de modelos de secado"):
+    st.stop()
 tiempo_secado = datos_secado["tiempo_min"]
 mr_observada = datos_secado["MR"]
 
@@ -593,7 +657,11 @@ def ajuste_secado_cacheado(
 
 
 with st.spinner("Ajustando modelos semiempíricos de secado..."):
-    tabla_secado = tabla_secado_cacheada(tiempo_secado, mr_observada)
+    try:
+        tabla_secado = tabla_secado_cacheada(tiempo_secado, mr_observada)
+    except Exception as error:
+        mostrar_error_ajuste(error, "la comparación AICc de modelos de secado")
+        st.stop()
 
 # Se dibujan puntos observados y las curvas ajustadas de todos los modelos.
 figura, eje = plt.subplots(figsize=(10, 5))
@@ -606,8 +674,14 @@ sns.scatterplot(
     zorder=3,
 )
 tiempo_suave = np.linspace(float(tiempo_secado.min()), float(tiempo_secado.max()), 400)
+parametros_modelos_secado = {}
 for nombre in MODELOS:
-    parametros_secado = ajuste_secado_cacheado(tiempo_secado, mr_observada, nombre)
+    try:
+        parametros_secado = ajuste_secado_cacheado(tiempo_secado, mr_observada, nombre)
+    except Exception as error:
+        mostrar_error_ajuste(error, f"el ajuste del modelo de secado {nombre}")
+        st.stop()
+    parametros_modelos_secado[nombre] = parametros_secado
     funcion_modelo = MODELOS[nombre]["funcion"]
     humedad_ajustada = funcion_modelo(tiempo_suave, *parametros_secado)
     eje.plot(tiempo_suave, humedad_ajustada, linewidth=2, label=nombre)
@@ -650,11 +724,7 @@ plt.close(figura)
 
 # Se grafica el residuo del modelo con el menor AICc en función del tiempo.
 mejor_modelo_secado = tabla_secado.iloc[0]["Modelo"]
-mejores_parametros_secado = ajuste_secado_cacheado(
-    tiempo_secado,
-    mr_observada,
-    mejor_modelo_secado,
-)
+mejores_parametros_secado = parametros_modelos_secado[mejor_modelo_secado]
 mejor_funcion_secado = MODELOS[mejor_modelo_secado]["funcion"]
 mr_mejor_ajustada = mejor_funcion_secado(
     tiempo_secado.to_numpy(), *mejores_parametros_secado
@@ -679,3 +749,33 @@ st.info(
     "porque no se proporcionaron varianzas de medición por observación; se interpreta como "
     "diagnóstico de error residual y no como prueba formal de chi-cuadrado."
 )
+
+# Se reúnen las tablas y resultados clave para descargarlos sin repetir ningún ajuste.
+with st.expander("Descargar resultados"):
+    descargar_excel(
+        {
+            "Resumen máximos": resumen_datos,
+            "Pruebas de ajuste": tabla_pruebas,
+            "Criterios información": tabla_criterios[
+                ["Modelo", "k", "ℓ", "AIC", "BIC", "AICc", "ΔAIC", "Interpretación de ΔAIC"]
+            ],
+            "Cuantiles retorno": tabla_cuantiles,
+            "Posiciones empíricas": posiciones,
+            "Modelos secado": tabla_secado[
+                ["Modelo", "Parámetros", "k", "R²", "RMSE", "AIC", "AICc", "ΔAICc"]
+            ],
+        },
+        "distribuciones_resultados",
+        key="descargar_distribuciones_excel",
+    )
+    descargar_figuras(figura, "distribuciones_residuos_secado", key="descargar_distribuciones_figura")
+    descargar_reporte_markdown(
+        "Resultados de distribuciones",
+        f"Modelos analizados: {', '.join(modelos_seleccionados)}.\n\n"
+        f"Mejor AIC: {tabla_criterios.iloc[0]['Modelo']}; "
+        f"mejor AICc de secado: {tabla_secado.iloc[0]['Modelo']}.\n\n"
+        f"Periodo de retorno calculado para precipitación máxima anual en mm. "
+        f"La interpretación requiere considerar supuestos de estacionariedad e independencia.",
+        "distribuciones_reporte.md",
+        key="descargar_distribuciones_reporte",
+    )

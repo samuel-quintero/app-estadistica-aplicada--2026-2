@@ -68,6 +68,11 @@ else:
 
 # Se comparan las medias de rendimiento para cada condición de riego observada.
 print("Media de rendimiento por riego:")
-for condicion, grupo in datos.groupby("riego", sort=True):
-    promedio_grupo = grupo["rendimiento"].mean()
-    print(f"  {condicion}: {promedio_grupo:.4f}")
+medias_riego = (
+    datos.groupby("riego", sort=True)["rendimiento"]
+    .mean()
+    .rename("rendimiento")
+    .reset_index()
+)
+for fila in medias_riego.itertuples(index=False):
+    print(f"  {fila.riego}: {fila.rendimiento:.4f}")
