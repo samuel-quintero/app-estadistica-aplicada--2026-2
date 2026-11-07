@@ -34,6 +34,15 @@ st.markdown(
 """
 )
 
+# Se ofrecen enlaces directos para abrir cada página además del menú multipágina de Streamlit.
+st.subheader("Acceso a las páginas")
+columnas_paginas = st.columns(5)
+columnas_paginas[0].page_link("pages/1_Datos.py", label="Datos")
+columnas_paginas[1].page_link("pages/2_EDA.py", label="EDA")
+columnas_paginas[2].page_link("pages/3_Distribuciones.py", label="Distribuciones")
+columnas_paginas[3].page_link("pages/4_Regresion.py", label="Regresión")
+columnas_paginas[4].page_link("pages/5_Series_de_tiempo.py", label="Series de tiempo")
+
 # Se explica la secuencia didáctica de resolver primero con lápiz y papel.
 st.header("Lápiz y Algoritmo")
 st.write(
