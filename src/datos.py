@@ -39,6 +39,58 @@ def cargar_metadatos() -> dict:
         return json.load(archivo)
 
 
+def tipos_de_variables(df: pd.DataFrame) -> pd.DataFrame:
+    """Resume el tipo de dato y la clasificación estadística de cada variable."""
+    # Se clasifica cada columna respetando primero los tipos categóricos y temporales.
+    filas = []
+    for nombre, serie in df.items():
+        tipo = serie.dtype
+        if pd.api.types.is_datetime64_any_dtype(tipo):
+            clasificacion = "cualitativa ordinal"
+        elif isinstance(tipo, pd.CategoricalDtype):
+            clasificacion = (
+                "cualitativa ordinal" if tipo.ordered else "cualitativa nominal"
+            )
+        elif pd.api.types.is_bool_dtype(tipo):
+            clasificacion = "cualitativa nominal"
+        elif pd.api.types.is_integer_dtype(tipo):
+            clasificacion = "cuantitativa discreta"
+        elif pd.api.types.is_numeric_dtype(tipo):
+            clasificacion = "cuantitativa continua"
+        else:
+            clasificacion = "cualitativa nominal"
+
+        # Se guarda el nombre legible del tipo junto con la clasificación asignada.
+        filas.append(
+            {
+                "Variable": nombre,
+                "Tipo de dato": str(tipo),
+                "Clasificación estadística": clasificacion,
+            }
+        )
+
+    return pd.DataFrame(
+        filas,
+        columns=["Variable", "Tipo de dato", "Clasificación estadística"],
+    )
+
+
+def valores_faltantes(df: pd.DataFrame) -> pd.DataFrame:
+    """Calcula la cantidad y el porcentaje de faltantes para cada variable."""
+    # Se cuentan los valores nulos y se calcula su proporción sobre todas las filas.
+    cantidad = df.isna().sum()
+    porcentaje = df.isna().mean().mul(100).fillna(0)
+
+    # Se conserva una fila por columna, incluso cuando no hay valores faltantes.
+    return pd.DataFrame(
+        {
+            "Variable": df.columns,
+            "Cantidad faltante": cantidad.to_numpy(),
+            "Porcentaje faltante": porcentaje.round(2).to_numpy(),
+        }
+    )
+
+
 def tarjeta_estudiante() -> None:
     """Muestra en la barra lateral la ficha del estudiante y sus datos simulados."""
     # Se obtiene la información común desde el archivo de metadatos.
