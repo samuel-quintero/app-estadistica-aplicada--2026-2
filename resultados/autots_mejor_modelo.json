@@ -1,0 +1,34 @@
+{
+  "nombre": "SectionalMotif",
+  "parametros": {
+    "window": 15,
+    "point_method": "midhinge",
+    "distance_metric": "canberra",
+    "include_differenced": true,
+    "k": 10,
+    "stride_size": 1,
+    "regression_type": null,
+    "comparison_transformation": null,
+    "combination_transformation": null
+  },
+  "transformaciones": {
+    "fillna": "rolling_mean",
+    "transformations": {
+      "0": "bkfilter",
+      "1": "bkfilter"
+    },
+    "transformation_params": {
+      "0": {},
+      "1": {}
+    }
+  },
+  "semilla": 5837,
+  "parametros_busqueda": {
+    "horizonte": 12,
+    "model_list": "superfast",
+    "generaciones": 5,
+    "validaciones": 2,
+    "intervalo": 0.9,
+    "semilla": 5837
+  }
+}

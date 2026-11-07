@@ -189,3 +189,104 @@ if __name__ == "__main__":
     # Se imprime el concurso de referencia ordenado por SMAPE en el bloque principal.
     resultados = concurso_referencia(muestra)
     print(resultados.to_string(index=False, float_format=lambda valor: f"{valor:.4f}"))
+
+
+def ejecutar_autots(
+    serie: pd.Series,
+    horizonte: int,
+    model_list: str,
+    generaciones: int,
+    validaciones: int,
+    intervalo: float,
+    semilla: int,
+) -> dict:
+    """Busca, valida y pronostica una serie mensual con AutoTS.
+
+    AutoTS evalúa familias de modelos como un ensayo de variedades: cada candidato
+    se prueba con validaciones temporales y la búsqueda genética conserva y combina
+    configuraciones competitivas para la siguiente generación.
+    """
+    # Se importa AutoTS dentro de la función para no cargar el buscador al usar otros métodos.
+    from autots import AutoTS
+
+    # Se valida el horizonte y el número de generaciones/validaciones solicitado.
+    if horizonte < 1:
+        raise ValueError("horizonte debe ser un entero positivo.")
+    if generaciones < 1 or validaciones < 1:
+        raise ValueError("generaciones y validaciones deben ser enteros positivos.")
+    if not 0 < intervalo < 1:
+        raise ValueError("intervalo debe estar entre 0 y 1, sin incluir los extremos.")
+
+    # Se conserva solo la serie numérica finita y se verifica su índice mensual MS.
+    datos = pd.to_numeric(serie, errors="coerce").dropna().astype(float).sort_index()
+    if not isinstance(datos.index, pd.DatetimeIndex):
+        raise TypeError("AutoTS requiere una serie con DatetimeIndex mensual.")
+    if datos.empty:
+        raise ValueError("La serie debe contener al menos un dato numérico válido.")
+    calendario_esperado = pd.date_range(
+        start=datos.index[0],
+        periods=len(datos),
+        freq="MS",
+    )
+    if not datos.index.equals(calendario_esperado):
+        raise ValueError("La serie debe ser mensual, sin huecos y al inicio de cada mes (MS).")
+
+    # Se convierte a formato ancho de una sola columna, formato que AutoTS acepta directamente.
+    nombre_serie = serie.name or "precipitacion_mm"
+    datos_anchos = datos.rename(nombre_serie).to_frame()
+
+    # Se configura la búsqueda con los límites de cómputo y validación solicitados.
+    modelo = AutoTS(
+        forecast_length=int(horizonte),
+        frequency="MS",
+        prediction_interval=float(intervalo),
+        max_generations=int(generaciones),
+        no_negatives=True,
+        constraint=None,
+        ensemble=None,
+        random_seed=int(semilla),
+        model_list=model_list,
+        transformer_list="superfast",
+        num_validations=int(validaciones),
+        validation_method="backwards",
+        n_jobs=1,
+        verbose=0,
+    )
+
+    # Se ejecuta el ensayo temporal: AutoTS ajusta candidatos y selecciona sus configuraciones.
+    modelo = modelo.fit(datos_anchos)
+
+    # Se obtiene el pronóstico final con sus límites según el intervalo pedido.
+    prediccion = modelo.predict()
+    pronostico = prediccion.forecast.iloc[:, 0].rename("pronostico_mm")
+    limite_inferior = prediccion.lower_forecast.iloc[:, 0].rename("limite_inferior_mm")
+    limite_superior = prediccion.upper_forecast.iloc[:, 0].rename("limite_superior_mm")
+
+    # Se alinean las tres curvas por fecha para evitar depender de índices posicionales.
+    tabla_pronostico = pd.concat(
+        [pronostico, limite_inferior, limite_superior],
+        axis=1,
+    ).rename_axis("fecha").reset_index()
+
+    # Se recuperan los resultados de validación y se solicitan las columnas principales.
+    resultados_validacion = modelo.results("validation")
+    if not isinstance(resultados_validacion, pd.DataFrame):
+        raise RuntimeError(f"AutoTS no devolvió resultados de validación: {resultados_validacion}")
+    columnas_resultados = ["Model", "smape", "mae", "rmse", "Score"]
+    columnas_faltantes = set(columnas_resultados).difference(resultados_validacion.columns)
+    if columnas_faltantes:
+        raise RuntimeError(
+            f"Faltan columnas de validación en AutoTS: {sorted(columnas_faltantes)}."
+        )
+    tabla_top10 = resultados_validacion[columnas_resultados].head(10).reset_index(drop=True)
+
+    # Se devuelve pronóstico, ficha del mejor modelo y los diez candidatos mejor puntuados.
+    return {
+        "pronostico": tabla_pronostico,
+        "mejor_modelo": {
+            "nombre": modelo.best_model_name,
+            "parametros": modelo.best_model_params,
+            "transformaciones": modelo.best_model_transformation_params,
+        },
+        "top10": tabla_top10,
+    }
