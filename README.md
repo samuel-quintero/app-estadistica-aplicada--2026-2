@@ -44,7 +44,7 @@ Desarrollar la capacidad de formular, calcular, verificar e interpretar métodos
 - openpyxl para exportar tablas a Excel y pytest para las pruebas de equivalencia.
 - R base y, opcionalmente, `fitdistrplus` y `evd` para verificación independiente en Posit Cloud.
 
-Las dependencias Python están enumeradas en `requirements.txt`. Las versiones no están fijadas en ese archivo; para reproducir resultados también se recomienda registrar las versiones efectivamente utilizadas.
+Las dependencias Python están fijadas en `requirements.txt` a las versiones comprobadas en este entorno. NumPy y SciPy requieren Python 3.12 o posterior; para el despliegue se recomienda seleccionar **Python 3.12** en Community Cloud. `scikit-learn` se declara porque AutoTS lo requiere, y `pytest` porque el repositorio incluye pruebas automatizadas.
 
 ## Estructura del proyecto
 
@@ -110,6 +110,35 @@ Streamlit descubre las páginas dentro de `pages/`. Los cálculos reutilizables 
 7. Los verificadores Python se ejecutan, por ejemplo, con `.venv/bin/python verificacion/verificar_eda.py`. Los scripts R se pueden abrir y ejecutar desde Posit Cloud; para el ajuste Gumbel opcional consulta las instrucciones de su propio script.
 
 No publiques secretos en el repositorio. La configuración de Streamlit desactiva XSRF para el flujo de archivos en Codespaces; no reutilices esa configuración sin revisar la protección correspondiente antes de desplegar la app públicamente.
+
+## App en línea
+
+**Enlace público:** ______________________________________________
+
+### Despliegue en Streamlit Community Cloud
+
+1. Sube el repositorio a GitHub y confirma que `app.py`, `requirements.txt`, `pages/`, `src/` y `datos/` estén en la rama que vas a publicar. No subas `.venv/` ni secretos.
+2. Entra en [Streamlit Community Cloud](https://share.streamlit.io/) e inicia sesión con la cuenta de GitHub que tiene acceso al repositorio.
+3. Selecciona **Create app** y elige el repositorio, la rama y `app.py` como archivo principal. El punto de entrada es `app.py`; Streamlit descubre las demás páginas en `pages/`.
+4. Abre **Advanced settings** y selecciona **Python 3.12**. No hace falta `runtime.txt`: Community Cloud permite elegir la versión en esta pantalla y su versión predeterminada documentada es 3.12.
+5. No necesitas configurar secretos para el flujo actual. Si en el futuro agregas credenciales, introdúcelas en **Secrets** de la app y no en archivos versionados.
+6. Pulsa **Deploy** y revisa los logs si la instalación o el inicio fallan. Cuando termine, copia la URL pública y pégala en el espacio de arriba.
+
+### Configuración de Streamlit
+
+El archivo `.streamlit/config.toml` define `headless = true`, apropiado para un servidor sin interfaz local. También contiene `enableXsrfProtection = false`, ajuste usado para el flujo de `st.file_uploader` en Codespaces. Community Cloud lee la configuración del repositorio: antes de publicar una app accesible públicamente, cambia esa opción a `true` o elimina la línea para conservar la protección XSRF. Si el cargador de archivos vuelve a fallar en Codespaces, conserva una configuración específica para ese entorno o una rama separada y valida el comportamiento en cada despliegue; no desactives la protección pública sin evaluar el riesgo.
+
+### AutoTS y límites de la nube
+
+AutoTS puede consumir tiempo y memoria al evaluar candidatos. Empieza con `model_list="superfast"`; si la búsqueda tarda demasiado, usa 2 generaciones y 1 validación (el formulario de la app permite reducir ambas). Para consultar el pronóstico previamente generado, abre **Resultados guardados**: esa sección carga los archivos de `resultados/` sin volver a ejecutar AutoTS. Asegúrate de que esos CSV/JSON estén incluidos en la rama si quieres que aparezcan en la app desplegada.
+
+### Errores comunes
+
+- **Fallo al instalar dependencias:** comprueba que Community Cloud use Python 3.12 y que `requirements.txt` esté en la raíz. Revisa el log de resolución de paquetes; las versiones están fijadas para evitar que una actualización futura cambie el entorno sin aviso.
+- **`ModuleNotFoundError` o archivos no encontrados:** usa `app.py` como archivo principal y conserva la estructura `src/`, `pages/` y `datos/` con la misma capitalización. Verifica que los nueve CSV/JSON de datos necesarios estén subidos a GitHub; las rutas de los módulos parten de la ubicación de `__file__`, no del directorio de trabajo de una terminal.
+- **AutoTS tarda o la app parece consumir mucha memoria:** selecciona `superfast`, reduce generaciones a 2 y validaciones a 1, evita ejecutar varias búsquedas simultáneas y usa **Resultados guardados** para revisar un pronóstico existente.
+- **Problemas con `st.file_uploader` o XSRF:** conserva la protección habilitada en la app pública. Si el ajuste especial de Codespaces es necesario para el desarrollo, usa una configuración/ramificación específica y prueba el cargador por separado.
+- **Cambios de dependencias no reflejados:** revisa los logs del despliegue y fuerza un reinicio o redeploy desde Community Cloud; no intentes corregirlo instalando paquetes manualmente en el servidor efímero.
 
 ## Metodología: Lápiz y Algoritmo
 
